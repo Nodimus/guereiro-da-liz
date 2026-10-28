@@ -47,6 +47,8 @@ export default function App() {
   const [showSkillTree, setShowSkillTree] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
 
+  const waveTimeoutRef = useRef<number | null>(null);
+
   // Initialize Three.js Game Engine once on mount
   useEffect(() => {
     if (!canvasMountRef.current) return;
@@ -59,7 +61,8 @@ export default function App() {
       onGameStateChange: (newState) => setGameState(newState),
       onWaveNotification: (title, subtitle) => {
         setWaveNotification({ title, subtitle });
-        window.setTimeout(() => setWaveNotification(null), 4000);
+        if (waveTimeoutRef.current) window.clearTimeout(waveTimeoutRef.current);
+        waveTimeoutRef.current = window.setTimeout(() => setWaveNotification(null), 4000);
       },
       onExecutionPrompt: (show, enemyName) => {
         setExecutionPrompt({ show, enemyName });
@@ -69,8 +72,8 @@ export default function App() {
     engineRef.current = engine;
 
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      // Toggle Skill Tree with Tab or K
-      if (e.code === 'Tab' || e.code === 'KeyK') {
+      // Toggle Skill Tree with Tab or B (Bênçãos) - KeyK reserved for Heavy Attack
+      if (e.code === 'Tab' || e.code === 'KeyB') {
         e.preventDefault();
         setShowSkillTree((prev) => !prev);
       }
@@ -80,6 +83,10 @@ export default function App() {
 
     return () => {
       window.removeEventListener('keydown', handleGlobalKeyDown);
+      if (waveTimeoutRef.current) {
+        window.clearTimeout(waveTimeoutRef.current);
+        waveTimeoutRef.current = null;
+      }
       engine.dispose();
       engineRef.current = null;
     };

@@ -117,6 +117,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           <span>·</span>
           <span><strong className="text-zinc-200">E</strong> Execução</span>
           <span>·</span>
+          <span><strong className="text-zinc-200">Tab / B</strong> Bênçãos</span>
+          <span>·</span>
           <span><strong className="text-zinc-200">Esc</strong> Pausa</span>
         </div>
       </div>

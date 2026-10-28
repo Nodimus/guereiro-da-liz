@@ -528,9 +528,18 @@ class SoundManager {
       this.drumTimer = null;
     }
     if (this.ctx) {
-      this.ctx.close();
+      try {
+        this.ctx.close();
+      } catch (e) {
+        console.warn('Error closing AudioContext:', e);
+      }
       this.ctx = null;
     }
+    this.isMusicPlaying = false;
+    this.masterGain = null;
+    this.musicGain = null;
+    this.sfxGain = null;
+    this.drumBeat = 0;
   }
 }
 

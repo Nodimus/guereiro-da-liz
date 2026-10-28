@@ -61,12 +61,27 @@ export class GameEngine {
   private clock!: THREE.Clock;
   private animFrameId: number = 0;
   private isSoftwareGl: boolean = false;
+  private softwareTimeoutId: number | null = null;
+  private isDisposed: boolean = false;
+
+  // Lifecycle & Event management
+  private abortController = new AbortController();
+  private waveSpawnTimer: number | null = null;
 
   // Scene Objects
   private hero!: HeroModelGroup;
   private enemies: EnemyEntity[] = [];
   private particleGroup!: THREE.Group;
   private sacredAltar!: THREE.Mesh;
+
+  // Pre-allocated Particle Pool
+  private sparkGeo = new THREE.SphereGeometry(0.08, 4, 4);
+  private sparkMat = new THREE.MeshBasicMaterial({ color: 0xffedd5 });
+  private sparkPool: THREE.Mesh[] = [];
+  private activeSparks: { mesh: THREE.Mesh; vel: THREE.Vector3; life: number; maxLife: number }[] = [];
+  private ringGeo = new THREE.RingGeometry(0.5, 2.5, 16);
+  private auraRingPool: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial }[] = [];
+  private activeAuras: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; life: number; maxLife: number; scale: number }[] = [];
 
   // Player State
   public stats: PlayerStats = {
@@ -126,6 +141,7 @@ export class GameEngine {
   // Damage Popups
   private damagePopups: DamageNumber[] = [];
   private nextPopupId: number = 1;
+  private popupUpdateTimer: number = 0;
 
   constructor(container: HTMLElement, callbacks: GameEngineCallbacks) {
     this.container = container;
@@ -437,99 +453,143 @@ export class GameEngine {
 
   // ==================== INPUT & CONTROLS ====================
   private setupInputs() {
-    window.addEventListener('keydown', (e) => {
-      this.keys[e.code] = true;
+    const signal = this.abortController.signal;
 
-      // Title screen quick-start
-      if (this.gameState === 'title' && (e.code === 'Space' || e.code === 'Enter')) {
-        this.startGame();
-        return;
-      }
+    window.addEventListener(
+      'keydown',
+      (e) => {
+        this.keys[e.code] = true;
 
-      // Pause toggle
-      if (e.code === 'Escape') {
-        if (this.gameState === 'playing') {
-          this.pauseGame();
-        } else if (this.gameState === 'paused') {
-          this.resumeGame();
+        // Title screen quick-start
+        if (this.gameState === 'title' && (e.code === 'Space' || e.code === 'Enter')) {
+          this.startGame();
+          return;
         }
-        return;
-      }
 
-      // Stance Switching (1 to 5)
-      if (this.gameState === 'playing') {
-        if (e.code === 'Digit1') this.switchStance('ogum');
-        if (e.code === 'Digit2') this.switchStance('xango');
-        if (e.code === 'Digit3') this.switchStance('iansa');
-        if (e.code === 'Digit4') this.switchStance('oxossi');
-        if (e.code === 'Digit5') this.switchStance('oxum');
+        // Pause toggle
+        if (e.code === 'Escape') {
+          if (this.gameState === 'playing') {
+            this.pauseGame();
+          } else if (this.gameState === 'paused') {
+            this.resumeGame();
+          }
+          return;
+        }
 
-        // Special Orixá Skill (Q or E)
-        if (e.code === 'KeyQ') this.triggerActiveSkill();
+        // Stance Switching (1 to 5)
+        if (this.gameState === 'playing') {
+          if (e.code === 'Digit1') this.switchStance('ogum');
+          if (e.code === 'Digit2') this.switchStance('xango');
+          if (e.code === 'Digit3') this.switchStance('iansa');
+          if (e.code === 'Digit4') this.switchStance('oxossi');
+          if (e.code === 'Digit5') this.switchStance('oxum');
 
-        // Ultimate Axé Burst (R or F)
-        if (e.code === 'KeyR' || e.code === 'KeyF') this.triggerUltimate();
+          // Special Orixá Skill (Q)
+          if (e.code === 'KeyQ') this.triggerActiveSkill();
 
-        // Brutal Finisher Execution (E)
-        if (e.code === 'KeyE') this.triggerExecution();
+          // Ultimate Axé Burst (R or F)
+          if (e.code === 'KeyR' || e.code === 'KeyF') this.triggerUltimate();
 
-        // Dodge Roll (Space or Shift)
-        if (e.code === 'Space' || e.code === 'ShiftLeft') this.triggerDodge();
+          // Brutal Finisher Execution (E)
+          if (e.code === 'KeyE') this.triggerExecution();
 
-        // Keyboard attack alternatives (J / K)
-        if (e.code === 'KeyJ') this.triggerLightAttack();
-        if (e.code === 'KeyK') this.triggerHeavyAttack();
-      }
-    });
+          // Dodge Roll (Space or Shift)
+          if (e.code === 'Space' || e.code === 'ShiftLeft') this.triggerDodge();
 
-    window.addEventListener('keyup', (e) => {
-      this.keys[e.code] = false;
-    });
+          // Keyboard attack alternatives (J / K)
+          if (e.code === 'KeyJ') this.triggerLightAttack();
+          if (e.code === 'KeyK') this.triggerHeavyAttack();
+        }
+      },
+      { signal }
+    );
 
-    window.addEventListener('blur', () => {
-      this.keys = {};
-    });
+    window.addEventListener(
+      'keyup',
+      (e) => {
+        this.keys[e.code] = false;
+      },
+      { signal }
+    );
+
+    window.addEventListener(
+      'blur',
+      () => {
+        this.keys = {};
+      },
+      { signal }
+    );
 
     // Mouse Controls
-    this.container.addEventListener('mousedown', (e) => {
-      soundManager.resume();
-      if (this.gameState !== 'playing') return;
+    this.container.addEventListener(
+      'mousedown',
+      (e) => {
+        soundManager.resume();
+        if (this.gameState !== 'playing') return;
 
-      if (e.button === 0) {
-        // Left Click: Light Attack Combo
-        this.triggerLightAttack();
-      } else if (e.button === 2) {
-        // Right Click: Heavy Attack Slam
-        e.preventDefault();
-        this.triggerHeavyAttack();
-      }
-    });
+        if (e.button === 0) {
+          // Left Click: Light Attack Combo
+          this.triggerLightAttack();
+        } else if (e.button === 2) {
+          // Right Click: Heavy Attack Slam
+          e.preventDefault();
+          this.triggerHeavyAttack();
+        }
+      },
+      { signal }
+    );
 
-    this.container.addEventListener('contextmenu', (e) => e.preventDefault());
+    this.container.addEventListener(
+      'contextmenu',
+      (e) => e.preventDefault(),
+      { signal }
+    );
 
-    // Mouse camera rotation
-    this.container.addEventListener('mousemove', (e) => {
-      if (document.pointerLockElement === this.container || e.buttons === 1 || e.buttons === 4) {
-        this.cameraYaw -= e.movementX * 0.0035;
-        this.cameraPitch = Math.max(0.08, Math.min(1.2, this.cameraPitch + e.movementY * 0.0035));
-      }
-    });
+    // Mouse camera rotation: Right-drag, Middle-drag, or Pointer Lock
+    this.container.addEventListener(
+      'mousemove',
+      (e) => {
+        const isRightOrMiddleDrag = (e.buttons & 2) !== 0 || (e.buttons & 4) !== 0;
+        if (document.pointerLockElement === this.container || isRightOrMiddleDrag) {
+          this.cameraYaw -= e.movementX * 0.0035;
+          this.cameraPitch = Math.max(0.08, Math.min(1.2, this.cameraPitch + e.movementY * 0.0035));
+        }
+      },
+      { signal }
+    );
 
     // Resize
-    window.addEventListener('resize', () => {
-      if (!this.renderer || !this.camera) return;
-      this.camera.aspect = this.container.clientWidth / this.container.clientHeight;
-      this.camera.updateProjectionMatrix();
-      this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
-    });
+    window.addEventListener(
+      'resize',
+      () => {
+        if (!this.renderer || !this.camera || this.isDisposed) return;
+        const width = this.container.clientWidth || window.innerWidth;
+        const height = this.container.clientHeight || window.innerHeight;
+        if (height === 0) return;
+        this.camera.aspect = width / height;
+        this.camera.updateProjectionMatrix();
+        this.renderer.setSize(width, height);
+      },
+      { signal }
+    );
   }
 
   // ==================== GAME FLOW ====================
   public startGame() {
     soundManager.init();
     soundManager.resume();
+
+    if (this.waveSpawnTimer !== null) {
+      window.clearTimeout(this.waveSpawnTimer);
+      this.waveSpawnTimer = null;
+    }
+
     this.gameState = 'playing';
     this.callbacks.onGameStateChange('playing');
+
+    // Deterministic Hero Reset
+    this.hero.position.set(0, 0, 0);
+    this.hero.rotation.set(0, 0, 0);
     this.stats.hp = this.stats.maxHp;
     this.stats.axe = 80;
     this.stats.comboCount = 0;
@@ -537,10 +597,26 @@ export class GameEngine {
     this.stats.comboRank = 'D';
     this.currentWave = 1;
 
-    // Clear existing enemies
-    this.clearAllEnemies();
+    // Reset Combat & Camera flags
+    this.isAttacking = false;
+    this.isHeavyAttacking = false;
+    this.isDodging = false;
+    this.isExecuting = false;
+    this.executionTarget = null;
+    this.hitstopTimer = 0;
+    this.cameraShakeIntensity = 0;
+    this.cameraYaw = 0;
+    this.cameraPitch = 0.28;
+    this.cameraDist = 6.8;
+    this.keys = {};
 
-    // Spawn first wave
+    this.damagePopups = [];
+    this.callbacks.onDamagePopups([]);
+    this.callbacks.onExecutionPrompt(false);
+    this.callbacks.onStatsUpdate({ ...this.stats });
+
+    // Clear existing enemies and spawn first wave
+    this.clearAllEnemies();
     this.spawnWave(1);
   }
 
@@ -554,6 +630,7 @@ export class GameEngine {
   public resumeGame() {
     if (this.gameState === 'paused') {
       this.gameState = 'playing';
+      this.keys = {};
       this.callbacks.onGameStateChange('playing');
     }
   }
@@ -863,8 +940,14 @@ export class GameEngine {
         `FASE ${this.currentWave} DESPERTADA`,
         this.getWaveTitle(this.currentWave)
       );
-      window.setTimeout(() => {
-        this.spawnWave(this.currentWave);
+      if (this.waveSpawnTimer !== null) {
+        window.clearTimeout(this.waveSpawnTimer);
+      }
+      this.waveSpawnTimer = window.setTimeout(() => {
+        this.waveSpawnTimer = null;
+        if (this.gameState === 'playing' && !this.isDisposed) {
+          this.spawnWave(this.currentWave);
+        }
       }, 2500);
     } else {
       // Victory!
@@ -1055,10 +1138,14 @@ export class GameEngine {
   }
 
   private addDamagePopup(text: string, worldPos: THREE.Vector3, color: string, isCrit: boolean) {
+    if (this.isDisposed) return;
     // Project 3D pos to 2D screen coords
     _tempVec.copy(worldPos);
     _tempVec.y += 1.6;
     _tempVec.project(this.camera);
+
+    // If behind or outside view frustum, discard
+    if (_tempVec.z > 1.0 || _tempVec.z < -1.0) return;
 
     const widthHalf = this.container.clientWidth / 2;
     const heightHalf = this.container.clientHeight / 2;
@@ -1079,72 +1166,139 @@ export class GameEngine {
     this.callbacks.onDamagePopups([...this.damagePopups]);
   }
 
+  // Pooled Particle Spark System
   private spawnHitSparks(pos: THREE.Vector3) {
-    for (let i = 0; i < 8; i++) {
-      const spark = new THREE.Mesh(
-        new THREE.SphereGeometry(0.08, 4, 4),
-        new THREE.MeshBasicMaterial({ color: 0xffedd5 })
-      );
-      spark.position.copy(pos);
-      this.particleGroup.add(spark);
+    if (this.isDisposed) return;
+    const count = 6;
+    for (let i = 0; i < count; i++) {
+      let sparkMesh = this.sparkPool.pop();
+      if (!sparkMesh) {
+        sparkMesh = new THREE.Mesh(this.sparkGeo, this.sparkMat);
+        this.particleGroup.add(sparkMesh);
+      }
+      sparkMesh.position.copy(pos);
+      sparkMesh.visible = true;
 
       const vel = new THREE.Vector3(
-        (Math.random() - 0.5) * 6,
+        (Math.random() - 0.5) * 7,
         Math.random() * 4 + 2,
-        (Math.random() - 0.5) * 6
+        (Math.random() - 0.5) * 7
       );
 
-      const startT = performance.now();
-      const updateSpark = () => {
-        const elapsed = (performance.now() - startT) / 1000;
-        if (elapsed < 0.3) {
-          spark.position.addScaledVector(vel, 0.02);
-          requestAnimationFrame(updateSpark);
-        } else {
-          this.particleGroup.remove(spark);
-        }
-      };
-      updateSpark();
+      this.activeSparks.push({
+        mesh: sparkMesh,
+        vel,
+        life: 0.28,
+        maxLife: 0.28,
+      });
     }
   }
 
+  // Pooled Elemental Aura Ring System
   private spawnElementalAuraBurst(pos: THREE.Vector3, orixa: OrixaType) {
-    const ringGeo = new THREE.RingGeometry(0.5, 2.5, 16);
-    ringGeo.rotateX(-Math.PI / 2);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: ORIXAS_CONFIG[orixa]?.accentColor || '#ffffff',
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.8,
-    });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.position.copy(pos);
-    ring.position.y = 0.08;
-    this.scene.add(ring);
+    if (this.isDisposed) return;
+    const colorHex = ORIXAS_CONFIG[orixa]?.accentColor || '#ffffff';
 
-    let scale = 1.0;
-    const expand = () => {
-      scale += 0.15;
-      ring.scale.set(scale, 1, scale);
-      ringMat.opacity -= 0.05;
-      if (ringMat.opacity > 0) {
-        requestAnimationFrame(expand);
+    let item = this.auraRingPool.pop();
+    if (!item) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: colorHex,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.8,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(this.ringGeo, mat);
+      mesh.rotation.x = -Math.PI / 2;
+      this.scene.add(mesh);
+      item = { mesh, mat };
+    } else {
+      item.mat.color.set(colorHex);
+      item.mat.opacity = 0.8;
+      item.mesh.visible = true;
+    }
+
+    item.mesh.position.copy(pos);
+    item.mesh.position.y = 0.08;
+    item.mesh.scale.set(1, 1, 1);
+
+    this.activeAuras.push({
+      mesh: item.mesh,
+      mat: item.mat,
+      life: 0.35,
+      maxLife: 0.35,
+      scale: 1.0,
+    });
+  }
+
+  private updateParticles(dt: number) {
+    // Update sparks
+    for (let i = this.activeSparks.length - 1; i >= 0; i--) {
+      const s = this.activeSparks[i];
+      s.mesh.position.addScaledVector(s.vel, dt);
+      s.life -= dt;
+      if (s.life <= 0) {
+        s.mesh.visible = false;
+        this.sparkPool.push(s.mesh);
+        this.activeSparks.splice(i, 1);
+      }
+    }
+
+    // Update elemental auras
+    for (let i = this.activeAuras.length - 1; i >= 0; i--) {
+      const a = this.activeAuras[i];
+      a.scale += 4.5 * dt;
+      a.mesh.scale.set(a.scale, 1, a.scale);
+      a.life -= dt;
+      a.mat.opacity = Math.max(0, (a.life / a.maxLife) * 0.8);
+      if (a.life <= 0) {
+        a.mesh.visible = false;
+        this.auraRingPool.push({ mesh: a.mesh, mat: a.mat });
+        this.activeAuras.splice(i, 1);
+      }
+    }
+  }
+
+  // Software WebGL pacing helper
+  private afterDraw(cb: () => void) {
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    if (!gl || typeof gl.fenceSync !== 'function') {
+      this.softwareTimeoutId = window.setTimeout(cb, 80);
+      return;
+    }
+    const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.flush();
+    const poll = () => {
+      if (this.isDisposed) {
+        if (sync) gl.deleteSync(sync);
+        return;
+      }
+      const state = sync && gl.getSyncParameter(sync, gl.SYNC_STATUS);
+      if (state === gl.UNSIGNALED) {
+        this.softwareTimeoutId = window.setTimeout(poll, 5);
       } else {
-        this.scene.remove(ring);
+        if (sync) gl.deleteSync(sync);
+        this.softwareTimeoutId = window.setTimeout(cb, 80);
       }
     };
-    expand();
+    this.softwareTimeoutId = window.setTimeout(poll, 5);
   }
 
   // ==================== MAIN 60FPS SIMULATION LOOP ====================
   private loop() {
-    this.animFrameId = requestAnimationFrame(this.loop);
+    if (this.isDisposed) return;
+
     const rawDt = this.clock.getDelta();
     const dt = Math.min(rawDt, 0.05); // Clamp frame delta
 
     // Hitstop logic
     if (this.hitstopTimer > 0) {
       this.hitstopTimer -= dt;
+      if (this.isSoftwareGl) {
+        this.afterDraw(this.loop);
+      } else {
+        this.animFrameId = requestAnimationFrame(this.loop);
+      }
       return;
     }
 
@@ -1155,10 +1309,12 @@ export class GameEngine {
       this.updatePlayer(dt, time);
       this.updateEnemies(dt, time);
       this.updateCooldowns(dt);
+      this.updateParticles(dt);
     } else if (this.gameState === 'title') {
       // Cinematic rotating camera around meditating hero on Title Screen
       this.cameraYaw += 0.004;
       this.hero.animateMovement(0, time);
+      this.updateParticles(dt);
     }
 
     // 2. Update Camera & Shake
@@ -1169,6 +1325,13 @@ export class GameEngine {
 
     // 4. Render
     this.renderer.render(this.scene, this.camera);
+
+    // Schedule next frame with software-GL guard
+    if (this.isSoftwareGl) {
+      this.afterDraw(this.loop);
+    } else {
+      this.animFrameId = requestAnimationFrame(this.loop);
+    }
   }
 
   private updatePlayer(dt: number, time: number) {
@@ -1317,7 +1480,8 @@ export class GameEngine {
     this.cameraDist = THREE.MathUtils.damp(this.cameraDist, targetDist, 4, dt);
 
     const cx = heroPos.x + Math.sin(this.cameraYaw) * Math.cos(this.cameraPitch) * this.cameraDist;
-    const cy = heroPos.y + Math.sin(this.cameraPitch) * this.cameraDist + 1.8;
+    // Clamp height to at least 1.0 so camera never clips beneath the terrain ground
+    const cy = Math.max(1.0, heroPos.y + Math.sin(this.cameraPitch) * this.cameraDist + 1.8);
     const cz = heroPos.z + Math.cos(this.cameraYaw) * Math.cos(this.cameraPitch) * this.cameraDist;
 
     // Apply Camera Shake
@@ -1355,13 +1519,105 @@ export class GameEngine {
       p.opacity -= 1.2 * dt; // Fade out
     });
 
+    const prevLen = this.damagePopups.length;
     this.damagePopups = this.damagePopups.filter((p) => p.opacity > 0);
-    this.callbacks.onDamagePopups([...this.damagePopups]);
+
+    // Throttle React state update to avoid 60 dispatches per second
+    this.popupUpdateTimer += dt;
+    if (this.popupUpdateTimer >= 0.04 || this.damagePopups.length === 0 || this.damagePopups.length !== prevLen) {
+      this.popupUpdateTimer = 0;
+      this.callbacks.onDamagePopups([...this.damagePopups]);
+    }
+  }
+
+  private disposeMaterial(mat: THREE.Material) {
+    const record = mat as unknown as Record<string, unknown>;
+    const textureKeys = [
+      'map',
+      'lightMap',
+      'bumpMap',
+      'normalMap',
+      'specularMap',
+      'envMap',
+      'alphaMap',
+      'roughnessMap',
+      'metalnessMap',
+      'emissiveMap',
+    ];
+    textureKeys.forEach((key) => {
+      const tex = record[key] as THREE.Texture | undefined;
+      if (tex && typeof tex.dispose === 'function') {
+        tex.dispose();
+      }
+    });
+    mat.dispose();
   }
 
   public dispose() {
-    cancelAnimationFrame(this.animFrameId);
-    this.renderer.dispose();
+    this.isDisposed = true;
+
+    // 1. Cancel render loops and timers
+    if (this.animFrameId) {
+      cancelAnimationFrame(this.animFrameId);
+      this.animFrameId = 0;
+    }
+    if (this.softwareTimeoutId !== null) {
+      window.clearTimeout(this.softwareTimeoutId);
+      this.softwareTimeoutId = null;
+    }
+    if (this.waveSpawnTimer !== null) {
+      window.clearTimeout(this.waveSpawnTimer);
+      this.waveSpawnTimer = null;
+    }
+
+    // 2. Abort all event listeners
+    this.abortController.abort();
+
+    // 3. Clear enemies
+    this.clearAllEnemies();
+
+    // 4. Dispose particle pools
+    this.sparkGeo.dispose();
+    this.sparkMat.dispose();
+    this.ringGeo.dispose();
+    this.sparkPool = [];
+    this.activeSparks = [];
+    this.auraRingPool.forEach((item) => {
+      item.mat.dispose();
+    });
+    this.auraRingPool = [];
+    this.activeAuras = [];
+
+    // 5. Traverse and dispose scene objects
+    this.scene.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh || (obj as THREE.Points).isPoints) {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.geometry) {
+          mesh.geometry.dispose();
+        }
+        if (mesh.material) {
+          if (Array.isArray(mesh.material)) {
+            mesh.material.forEach((mat) => this.disposeMaterial(mat));
+          } else {
+            this.disposeMaterial(mesh.material);
+          }
+        }
+      }
+    });
+
+    if (this.scene.environment) {
+      this.scene.environment.dispose();
+    }
+
+    // 6. Remove canvas from DOM and dispose renderer
+    if (this.renderer) {
+      if (this.renderer.domElement && this.renderer.domElement.parentNode) {
+        this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
+      }
+      this.renderer.dispose();
+    }
+
+    // 7. Dispose Audio
     soundManager.dispose();
   }
 }
