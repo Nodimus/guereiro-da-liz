@@ -1,0 +1,223 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { OrixaData, SkillNode } from './types';
+
+export const ORIXAS_CONFIG: Record<string, OrixaData> = {
+  ogum: {
+    id: 'ogum',
+    name: 'Ogum',
+    title: 'Senhor do Ferro e da Guerra',
+    element: 'Aço Sagrado & Fogo Branco',
+    color: '#0284c7', // Sky Blue / Deep Steel
+    accentColor: '#38bdf8',
+    weaponName: 'Lâminas Gêmeas de Ferro Sagrado',
+    description: 'Deus guerreiro da forja e abridor de caminhos. Seus cortes são cirúrgicos, rápidos e partem até as armaduras mais espessas.',
+    skillName: 'Corte das Sete Linhas',
+    skillDesc: 'Gira as lâminas em turbilhão de aço incandescente, desferindo 6 golpes rápidos e sangramento.',
+    skillCooldown: 6,
+    icon: 'swords',
+  },
+  xango: {
+    id: 'xango',
+    name: 'Xangô',
+    title: 'Senhor do Trovão e do Fogo da Justiça',
+    element: 'Fogo Ancestral & Magma',
+    color: '#ea580c', // Bright Red-Orange
+    accentColor: '#f97316',
+    weaponName: 'Oxé Duplo de Fogo Cósmico',
+    description: 'Rei e juiz divino. Com seu machado de duas faces, esmaga o solo liberando erupções de rocha e fogo que quebram qualquer defesa.',
+    skillName: 'Erupção da Justiça Cósmica',
+    skillDesc: 'Salta e desaba o Oxé contra o chão, gerando cratera flamejante com onda de choque devastadora.',
+    skillCooldown: 8,
+    icon: 'flame',
+  },
+  iansa: {
+    id: 'iansa',
+    name: 'Iansã (Oyá)',
+    title: 'Senhora dos Ventos, Raios e Tempestades',
+    element: 'Ventos Furiosos & Relâmpago',
+    color: '#dc2626', // Deep Crimson / Thunder Yellow
+    accentColor: '#fde047',
+    weaponName: 'Alfanje dos Ventos e Erukerê',
+    description: 'Guerreira indomável das tempestades. Move-se com a velocidade do raio e conjura ciclones que erguem os inimigos indefesos.',
+    skillName: 'Tufão de Oyá',
+    skillDesc: 'Conjura um ciclone de relâmpagos ao redor que atrai e ergue inimigos no ar, desferindo choques contínuos.',
+    skillCooldown: 7,
+    icon: 'wind',
+  },
+  oxossi: {
+    id: 'oxossi',
+    name: 'Oxóssi',
+    title: 'Rei das Matas e Mestre Caçador',
+    element: 'Espírito da Floresta & Éter Dourado',
+    color: '#16a34a', // Forest Emerald
+    accentColor: '#4ade80',
+    weaponName: 'Ofá Sagrado (Arco Místico)',
+    description: 'O caçador de uma só flecha certeira. Usa a energia pura das matas sagradas para disparar projéteis de longo alcance devastadores.',
+    skillName: 'Tiro Certeiro de Oió',
+    skillDesc: 'Dispara uma salva de 3 flechas espirituais de pura luz que perfuram e desaceleram inimigos com 100% de acerto crítico.',
+    skillCooldown: 5,
+    icon: 'crosshair',
+  },
+  oxum: {
+    id: 'oxum',
+    name: 'Oxum',
+    title: 'Senhora do Ouro e das Águas da Vida',
+    element: 'Águas Sagradas & Ouro Vital',
+    color: '#eab308', // Radiant Gold
+    accentColor: '#fef08a',
+    weaponName: 'Espelho de Ouro & Adaga de Cura',
+    description: 'Deusa da beleza, doçura e cura ancestral. Seus poderes restauram a vitalidade perdida e repelem a escuridão com barreiras de ouro.',
+    skillName: 'Manto Dourado da Regeneração',
+    skillDesc: 'Restaura instantaneamente 50% de HP e gera escudo que reflete ataques por 4 segundos.',
+    skillCooldown: 12,
+    icon: 'sparkles',
+  },
+};
+
+export const INITIAL_SKILLS: SkillNode[] = [
+  // OGUM SKILLS
+  {
+    id: 'ogum_1',
+    name: 'Aço Sagrado de Ogum',
+    orixa: 'ogum',
+    cost: 50,
+    unlocked: true,
+    description: 'Aumenta o dano de ataque básico com as lâminas em +20%.',
+    effectType: 'passive_atk',
+    tier: 1,
+    iconName: 'swords',
+  },
+  {
+    id: 'ogum_2',
+    name: 'Combo das Quatro Forjas',
+    orixa: 'ogum',
+    cost: 120,
+    unlocked: false,
+    description: 'Desbloqueia um quarto golpe final no combo leve que causa atordoamento imediato.',
+    effectType: 'combo_ext',
+    tier: 2,
+    iconName: 'zap',
+  },
+  {
+    id: 'ogum_3',
+    name: 'Fúria do Ferreiro Divino',
+    orixa: 'ogum',
+    cost: 250,
+    unlocked: false,
+    description: 'O Corte das Sete Linhas dispara lâminas de energia de ferro cortando à distância.',
+    effectType: 'skill_enhance',
+    tier: 3,
+    iconName: 'shield',
+  },
+
+  // XANGÔ SKILLS
+  {
+    id: 'xango_1',
+    name: 'Fogo Primordial',
+    orixa: 'xango',
+    cost: 80,
+    unlocked: false,
+    description: 'Ataques pesados aplicam queimadura ígnea contínua por 4 segundos.',
+    effectType: 'passive_atk',
+    tier: 1,
+    iconName: 'flame',
+  },
+  {
+    id: 'xango_2',
+    name: 'Impacto Sísmico de Pedreira',
+    orixa: 'xango',
+    cost: 160,
+    unlocked: false,
+    description: 'Ataque pesado no chão arremessa estilhaços incandescentes em 360 graus.',
+    effectType: 'combo_ext',
+    tier: 2,
+    iconName: 'layers',
+  },
+  {
+    id: 'xango_3',
+    name: 'Trovão de Justiça Implacável',
+    orixa: 'xango',
+    cost: 300,
+    unlocked: false,
+    description: 'A Erupção de Xangô atrai raios celestes duplicando o raio de explosão.',
+    effectType: 'skill_enhance',
+    tier: 3,
+    iconName: 'sun',
+  },
+
+  // IANSÃ SKILLS
+  {
+    id: 'iansa_1',
+    name: 'Dança das Ventanias',
+    orixa: 'iansa',
+    cost: 70,
+    unlocked: false,
+    description: 'Aumenta a velocidade de movimento em +25% e a distância da esquiva.',
+    effectType: 'passive_atk',
+    tier: 1,
+    iconName: 'wind',
+  },
+  {
+    id: 'iansa_2',
+    name: 'Rastro de Centelha',
+    orixa: 'iansa',
+    cost: 180,
+    unlocked: false,
+    description: 'A esquiva perfeita deixa para trás um rastro elétrico que paralisa inimigos próximos.',
+    effectType: 'skill_enhance',
+    tier: 2,
+    iconName: 'zap',
+  },
+
+  // OXÓSSI SKILLS
+  {
+    id: 'oxossi_1',
+    name: 'Foco do Caçador Solitário',
+    orixa: 'oxossi',
+    cost: 90,
+    unlocked: false,
+    description: 'Flechas perfurantes causam +40% de dano crítico contra chefes e feras.',
+    effectType: 'passive_atk',
+    tier: 1,
+    iconName: 'crosshair',
+  },
+  {
+    id: 'oxossi_2',
+    name: 'Chuva de Flechas de Aruanda',
+    orixa: 'oxossi',
+    cost: 200,
+    unlocked: false,
+    description: 'Ao atingir um inimigo, flechas menores de luz caem do céu nos arredores.',
+    effectType: 'skill_enhance',
+    tier: 2,
+    iconName: 'feather',
+  },
+
+  // OXUM SKILLS
+  {
+    id: 'oxum_1',
+    name: 'Fonte da Vitalidade Eterna',
+    orixa: 'oxum',
+    cost: 100,
+    unlocked: false,
+    description: 'Aumenta o HP máximo do guerreiro em +50 e regenera 2 HP por segundo.',
+    effectType: 'passive_hp',
+    tier: 1,
+    iconName: 'heart',
+  },
+  {
+    id: 'oxum_2',
+    name: 'Ressonância do Axé Supremo',
+    orixa: 'oxum',
+    cost: 400,
+    unlocked: false,
+    description: 'Desbloqueia o Ataque Supremo Ancestral dos Cinco Orixás com destruição maciça!',
+    effectType: 'ultimate',
+    tier: 3,
+    iconName: 'star',
+  },
+];

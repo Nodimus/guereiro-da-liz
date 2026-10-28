@@ -1,0 +1,6 @@
+{
+  "name": "Axé: Guerra dos Ancestrais - RPG 3D Hack & Slash",
+  "description": "RPG de ação hack and slash 3D estilo God of War com poderes dos Orixás africanos e batalhas contra entidades do folclore brasileiro.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
