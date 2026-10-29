@@ -204,6 +204,16 @@ export const HUD: React.FC<HUDProps> = ({
               <div className="text-xs font-mono font-bold text-amber-400 tracking-wider">
                 {stats.comboCount} <span className="text-zinc-400 font-sans">GOLPES</span>
               </div>
+              {stats.comboTimer !== undefined && stats.maxComboTimer !== undefined && stats.maxComboTimer > 0 && (
+                <div className="w-24 h-1.5 bg-zinc-900/90 rounded-full overflow-hidden border border-zinc-700/60 mt-1">
+                  <div
+                    className="h-full bg-amber-400 rounded-full transition-all duration-75"
+                    style={{
+                      width: `${Math.max(0, Math.min(100, (stats.comboTimer / stats.maxComboTimer) * 100))}%`,
+                    }}
+                  />
+                </div>
+              )}
             </div>
           )}
 

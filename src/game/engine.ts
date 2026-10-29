@@ -21,6 +21,18 @@ import {
   MapinguariModelGroup,
 } from './models';
 import { DamageNumber, EnemyStats, EnemyType, OrixaType, PlayerStats, SkillNode } from './types';
+import {
+  AttackFrameData,
+  calculateEnemyDamageToPlayer,
+  calculatePlayerDamage,
+  COMBO_RESET_TIMEOUT,
+  DODGE_FRAME_DATA,
+  ENEMY_COMBAT_CONFIGS,
+  HEAVY_ATTACK_FRAME_DATA,
+  INPUT_BUFFER_WINDOW,
+  isDodgeInvulnerable,
+  LIGHT_ATTACK_COMBOS,
+} from './combat';
 
 // Pre-allocated vectors for 60fps zero GC
 const _tempVec = new THREE.Vector3();
@@ -48,6 +60,14 @@ export interface EnemyEntity {
   hitTimer: number;
   stunTimer: number;
   deathTimer: number;
+  // Enhanced combat state machine fields
+  windupTimer: number;
+  activeAttackTimer: number;
+  recoveryTimer: number;
+  staggerTimer: number;
+  flashTimer: number;
+  hasHitPlayerThisAttack: boolean;
+  originalEmissives: { mat: THREE.MeshStandardMaterial; emissive: THREE.Color; intensity: number }[];
 }
 
 export class GameEngine {
@@ -112,13 +132,23 @@ export class GameEngine {
   // Combat State
   private isAttacking: boolean = false;
   private attackPhase: number = 0; // combo index 0..3
+  private nextComboPhase: number = 0;
   private attackTimer: number = 0;
   private attackDuration: number = 0.35;
   private isHeavyAttacking: boolean = false;
+  private currentAttackData: AttackFrameData | null = null;
+  private hitEnemiesThisSwing = new Set<string>();
+  private bufferedAction: 'light' | 'heavy' | 'dodge' | null = null;
+  private bufferedActionTimer: number = 0;
+  private comboResetTimer: number = 0;
+
+  // Dodge State
   private isDodging: boolean = false;
   private dodgeTimer: number = 0;
   private dodgeDuration: number = 0.42;
   private dodgeDir = new THREE.Vector3();
+
+  // Impact & Finisher State
   private hitstopTimer: number = 0;
   private cameraShakeIntensity: number = 0;
   private executionTarget: EnemyEntity | null = null;
@@ -600,6 +630,13 @@ export class GameEngine {
     // Reset Combat & Camera flags
     this.isAttacking = false;
     this.isHeavyAttacking = false;
+    this.attackPhase = 0;
+    this.nextComboPhase = 0;
+    this.currentAttackData = null;
+    this.hitEnemiesThisSwing.clear();
+    this.bufferedAction = null;
+    this.bufferedActionTimer = 0;
+    this.comboResetTimer = 0;
     this.isDodging = false;
     this.isExecuting = false;
     this.executionTarget = null;
@@ -646,64 +683,113 @@ export class GameEngine {
 
   // ==================== COMBAT ACTIONS ====================
 
-  // 1. Light Attack Combo (4-hit chain)
+  // 1. Light Attack Combo (4-hit chain with input buffering and frame data)
   public triggerLightAttack() {
-    if (this.isAttacking || this.isDodging || this.isExecuting) return;
+    if (this.isExecuting) return;
 
+    if (this.isDodging) {
+      this.bufferedAction = 'light';
+      this.bufferedActionTimer = INPUT_BUFFER_WINDOW;
+      return;
+    }
+
+    if (this.isAttacking) {
+      // If past active frames, allow queueing next combo strike smoothly
+      if (this.currentAttackData && this.attackTimer >= this.currentAttackData.canDodgeCancelFrom) {
+        this.bufferedAction = 'light';
+        this.bufferedActionTimer = INPUT_BUFFER_WINDOW;
+      }
+      return;
+    }
+
+    // Reset combo back to start if timed out
+    if (this.comboResetTimer <= 0) {
+      this.attackPhase = 0;
+    }
+
+    const frameData = LIGHT_ATTACK_COMBOS[this.attackPhase];
+    this.currentAttackData = frameData;
     this.isAttacking = true;
     this.isHeavyAttacking = false;
     this.attackTimer = 0;
-    this.attackDuration = 0.32;
+    this.attackDuration = frameData.totalDuration;
+    this.hitEnemiesThisSwing.clear(); // Ensure clean hit deduplication
+    this.comboResetTimer = COMBO_RESET_TIMEOUT;
+    this.nextComboPhase = (this.attackPhase + 1) % LIGHT_ATTACK_COMBOS.length;
 
-    soundManager.playSlash(1.0 + this.attackPhase * 0.15);
-
-    // Hit-check
-    this.performAttackHit(false);
-
-    // Advance combo chain
-    this.attackPhase = (this.attackPhase + 1) % 4;
+    soundManager.playSlash(1.0 + this.attackPhase * 0.12);
   }
 
-  // 2. Heavy Attack (Xangô slam or charged strike)
+  // 2. Heavy Attack (Xangô seismic slam with startup windup and armor break)
   public triggerHeavyAttack() {
-    if (this.isAttacking || this.isDodging || this.isExecuting) return;
+    if (this.isExecuting) return;
 
+    if (this.isDodging) {
+      this.bufferedAction = 'heavy';
+      this.bufferedActionTimer = INPUT_BUFFER_WINDOW;
+      return;
+    }
+
+    if (this.isAttacking) {
+      if (this.currentAttackData && this.attackTimer >= this.currentAttackData.canDodgeCancelFrom) {
+        this.bufferedAction = 'heavy';
+        this.bufferedActionTimer = INPUT_BUFFER_WINDOW;
+      }
+      return;
+    }
+
+    const frameData = HEAVY_ATTACK_FRAME_DATA;
+    this.currentAttackData = frameData;
     this.isAttacking = true;
     this.isHeavyAttacking = true;
     this.attackTimer = 0;
-    this.attackDuration = 0.48;
+    this.attackDuration = frameData.totalDuration;
+    this.hitEnemiesThisSwing.clear();
+    this.comboResetTimer = COMBO_RESET_TIMEOUT;
 
     soundManager.playHeavyImpact();
-    this.performAttackHit(true);
-    this.triggerCameraShake(0.35);
   }
 
-  // 3. Dodge Roll
+  // 3. Dodge Roll with I-Frames and instant Dodge-Cancel capability
   public triggerDodge() {
-    if (this.isDodging || this.isExecuting) return;
+    if (this.isExecuting || this.isDodging) return;
+
+    if (this.isAttacking) {
+      // Allow instant dodge-canceling of recovery window
+      if (this.currentAttackData && this.attackTimer >= this.currentAttackData.canDodgeCancelFrom) {
+        this.isAttacking = false;
+        this.currentAttackData = null;
+        this.hitEnemiesThisSwing.clear();
+      } else {
+        this.bufferedAction = 'dodge';
+        this.bufferedActionTimer = INPUT_BUFFER_WINDOW;
+        return;
+      }
+    }
 
     this.isDodging = true;
     this.dodgeTimer = 0;
-    this.isAttacking = false;
+    this.dodgeDuration = DODGE_FRAME_DATA.totalDuration;
 
-    // Determine roll direction based on held keys
+    // Determine roll direction based on held keys, or backward if neutral
     const forward = _tempVec.set(0, 0, -1).applyAxisAngle(THREE.Object3D.DEFAULT_UP, this.cameraYaw);
     const right = _camOffset.set(1, 0, 0).applyAxisAngle(THREE.Object3D.DEFAULT_UP, this.cameraYaw);
 
     this.dodgeDir.set(0, 0, 0);
-    if (this.keys['KeyW']) this.dodgeDir.add(forward);
-    if (this.keys['KeyS']) this.dodgeDir.sub(forward);
-    if (this.keys['KeyD']) this.dodgeDir.add(right);
-    if (this.keys['KeyA']) this.dodgeDir.sub(right);
+    if (this.keys['KeyW'] || this.keys['ArrowUp']) this.dodgeDir.add(forward);
+    if (this.keys['KeyS'] || this.keys['ArrowDown']) this.dodgeDir.sub(forward);
+    if (this.keys['KeyD'] || this.keys['ArrowRight']) this.dodgeDir.add(right);
+    if (this.keys['KeyA'] || this.keys['ArrowLeft']) this.dodgeDir.sub(right);
 
     if (this.dodgeDir.lengthSq() < 0.01) {
-      this.dodgeDir.copy(forward);
+      // Neutral dodge: step backward from forward look
+      this.dodgeDir.copy(forward).negate();
     }
     this.dodgeDir.normalize();
 
     soundManager.playDodge();
 
-    // Iansã Lightning trail if unlocked
+    // Iansã Lightning trail perk
     if (this.stats.activeOrixa === 'iansa') {
       soundManager.playIansaWind();
       this.spawnElementalAuraBurst(this.hero.position, 'iansa');
@@ -810,55 +896,86 @@ export class GameEngine {
     this.callbacks.onExecutionPrompt(false);
   }
 
-  private performAttackHit(isHeavy: boolean) {
-    const range = isHeavy ? 3.8 : 2.8;
+  private flashEnemyMesh(entity: EnemyEntity, duration: number) {
+    entity.flashTimer = duration;
+    entity.originalEmissives.forEach((rec) => {
+      rec.mat.emissive.setHex(0xffffff);
+      rec.mat.emissiveIntensity = 2.0;
+    });
+  }
+
+  private performActiveHitDetection(data: AttackFrameData) {
     const forward = _tempVec.set(0, 0, 1).applyQuaternion(this.hero.quaternion);
     let hitCount = 0;
 
     this.enemies.forEach((entity) => {
       if (entity.stats.hp <= 0) return;
+      if (this.hitEnemiesThisSwing.has(entity.id)) return; // Deduplication: 1 hit per enemy per swing!
 
       const toEnemy = _camOffset.subVectors(entity.mesh.position, this.hero.position);
       const dist = toEnemy.length();
 
-      if (dist < range) {
+      if (dist <= data.range) {
         toEnemy.normalize();
         const dot = forward.dot(toEnemy);
 
-        // Within 120-degree cone in front
-        if (dot > 0.25 || dist < 1.4) {
+        // Within attack cone arc (or point-blank proximity)
+        if (dot >= data.arcCos || dist < 1.4) {
+          this.hitEnemiesThisSwing.add(entity.id);
           hitCount++;
-          const baseDamage = isHeavy ? this.stats.attackPower * 2.2 : this.stats.attackPower;
-          const isCrit = Math.random() < 0.25;
-          const finalDamage = Math.round(baseDamage * (isCrit ? 1.8 : 1.0));
 
-          entity.stats.hp -= finalDamage;
+          const combatResult = calculatePlayerDamage(
+            this.stats.attackPower,
+            data.damageMultiplier,
+            entity.stats.defense,
+            this.stats.activeOrixa,
+            this.isHeavyAttacking
+          );
+
+          entity.stats.hp -= combatResult.finalDamage;
+          const config = ENEMY_COMBAT_CONFIGS[entity.type];
+
+          // Set hit & stagger state
           entity.stats.state = 'hit';
-          entity.hitTimer = 0.25;
+          entity.staggerTimer = data.staggerDuration * (1 - config.staggerResist);
+          entity.hitTimer = 0.22;
 
-          // Push back
-          entity.mesh.position.addScaledVector(toEnemy, isHeavy ? 1.5 : 0.6);
+          // Apply directional pushback
+          entity.mesh.position.addScaledVector(toEnemy, data.pushback * (1 - config.pushbackResist));
+
+          // Hit flash
+          this.flashEnemyMesh(entity, 0.14);
 
           // Hitstop simulation (visceral freeze-frame)
-          this.hitstopTimer = isHeavy ? 0.06 : 0.03;
+          this.hitstopTimer = this.isHeavyAttacking ? 0.06 : 0.035;
+
+          // Decaying camera shake
+          this.triggerCameraShake(this.isHeavyAttacking ? 0.45 : 0.18);
 
           // Sound & sparks
-          soundManager.playClash();
+          if (this.isHeavyAttacking) {
+            soundManager.playHeavyImpact();
+          } else {
+            soundManager.playClash();
+          }
           this.spawnHitSparks(entity.mesh.position);
 
-          // Check if can be executed (HP < 25%)
+          // Stun threshold: if HP <= 28%, mark as executable!
           if (entity.stats.hp > 0 && entity.stats.hp <= entity.stats.maxHp * 0.28) {
             entity.stats.canBeExecuted = true;
+            entity.stats.state = 'stunned';
+            entity.stunTimer = 6.0;
+            soundManager.playStagger();
             this.executionTarget = entity;
             this.callbacks.onExecutionPrompt(true, entity.stats.name);
           }
 
           // Damage popup
           this.addDamagePopup(
-            `${finalDamage}`,
+            `${combatResult.finalDamage}`,
             entity.mesh.position,
-            isCrit ? '#ef4444' : isHeavy ? '#f97316' : '#38bdf8',
-            isCrit
+            combatResult.isCrit ? '#ef4444' : combatResult.elementColor,
+            combatResult.isCrit
           );
 
           if (entity.stats.hp <= 0) {
@@ -869,7 +986,7 @@ export class GameEngine {
     });
 
     if (hitCount > 0) {
-      this.increaseCombo(hitCount * 15);
+      this.increaseCombo(hitCount * 18);
       this.stats.axe = Math.min(this.stats.maxAxe, this.stats.axe + hitCount * 6);
       this.callbacks.onStatsUpdate({ ...this.stats });
     }
@@ -1054,8 +1171,40 @@ export class GameEngine {
         break;
     }
 
+    const config = ENEMY_COMBAT_CONFIGS[type];
+    const defense = config.baseDefense;
+
     mesh.position.set(x, 0, z);
     this.scene.add(mesh);
+
+    // Cache original mesh materials for hit flash effects
+    const originalEmissives: { mat: THREE.MeshStandardMaterial; emissive: THREE.Color; intensity: number }[] = [];
+    mesh.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const m = (child as THREE.Mesh).material;
+        if (m) {
+          if (Array.isArray(m)) {
+            m.forEach((mat) => {
+              if ((mat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+                const std = mat as THREE.MeshStandardMaterial;
+                originalEmissives.push({
+                  mat: std,
+                  emissive: std.emissive.clone(),
+                  intensity: std.emissiveIntensity ?? 1.0,
+                });
+              }
+            });
+          } else if ((m as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+            const std = m as THREE.MeshStandardMaterial;
+            originalEmissives.push({
+              mat: std,
+              emissive: std.emissive.clone(),
+              intensity: std.emissiveIntensity ?? 1.0,
+            });
+          }
+        }
+      }
+    });
 
     const enemy: EnemyEntity = {
       id: `enemy_${Math.random().toString(36).substring(2, 7)}`,
@@ -1069,6 +1218,7 @@ export class GameEngine {
         hp,
         maxHp: hp,
         attackPower: atk,
+        defense,
         speed,
         isBoss,
         canBeExecuted: false,
@@ -1076,10 +1226,17 @@ export class GameEngine {
       },
       targetPos: this.hero.position.clone(),
       velocity: new THREE.Vector3(),
-      attackTimer: Math.random() * 2,
+      attackTimer: Math.random() * 0.5,
       hitTimer: 0,
       stunTimer: 0,
       deathTimer: 0,
+      windupTimer: 0,
+      activeAttackTimer: 0,
+      recoveryTimer: 0,
+      staggerTimer: 0,
+      flashTimer: 0,
+      hasHitPlayerThisAttack: false,
+      originalEmissives,
     };
 
     this.enemies.push(enemy);
@@ -1337,7 +1494,34 @@ export class GameEngine {
   private updatePlayer(dt: number, time: number) {
     let moveSpeed = 0;
 
-    // Movement if not attacking/locked
+    // 1. Combo Timer Decay & Reset Management
+    if (this.comboResetTimer > 0) {
+      this.comboResetTimer -= dt;
+      if (this.comboResetTimer <= 0) {
+        if (!this.isAttacking) {
+          this.attackPhase = 0;
+        }
+        if (this.stats.comboCount > 0) {
+          this.stats.comboCount = 0;
+          this.stats.comboRank = 'D';
+          soundManager.setIntensity(0);
+          this.callbacks.onStatsUpdate({ ...this.stats });
+        }
+      }
+    }
+    this.stats.comboTimer = Math.max(0, this.comboResetTimer);
+    this.stats.maxComboTimer = COMBO_RESET_TIMEOUT;
+    this.stats.isInvulnerable = this.isDodging && isDodgeInvulnerable(this.dodgeTimer);
+
+    // 2. Input Buffering Expiration
+    if (this.bufferedActionTimer > 0) {
+      this.bufferedActionTimer -= dt;
+      if (this.bufferedActionTimer <= 0) {
+        this.bufferedAction = null;
+      }
+    }
+
+    // 3. Movement if not locked in dodge or execution
     if (!this.isDodging && !this.isExecuting) {
       const forward = _tempVec.set(0, 0, -1).applyAxisAngle(THREE.Object3D.DEFAULT_UP, this.cameraYaw);
       const right = _camOffset.set(1, 0, 0).applyAxisAngle(THREE.Object3D.DEFAULT_UP, this.cameraYaw);
@@ -1365,96 +1549,211 @@ export class GameEngine {
       }
     }
 
-    // Handle Attack Animation
+    // 4. Attack Animation & Active Hitbox Window
     if (this.isAttacking) {
       this.attackTimer += dt;
-      const progress = this.attackTimer / this.attackDuration;
+      const progress = Math.min(1, this.attackTimer / this.attackDuration);
       if (this.isHeavyAttacking) {
         this.hero.playHeavyPose(progress);
       } else {
         this.hero.playAttackPose(this.attackPhase, progress);
       }
 
+      // Active frames: trigger hit detection
+      if (this.currentAttackData) {
+        const { startup, active } = this.currentAttackData;
+        if (this.attackTimer >= startup && this.attackTimer <= startup + active) {
+          this.performActiveHitDetection(this.currentAttackData);
+        }
+      }
+
       if (this.attackTimer >= this.attackDuration) {
         this.isAttacking = false;
+        if (!this.isHeavyAttacking) {
+          this.attackPhase = this.nextComboPhase;
+        }
+        this.currentAttackData = null;
+        this.hitEnemiesThisSwing.clear();
+
+        // Drain buffered input if queued
+        if (this.bufferedAction) {
+          const nextAct = this.bufferedAction;
+          this.bufferedAction = null;
+          this.bufferedActionTimer = 0;
+          if (nextAct === 'light') this.triggerLightAttack();
+          else if (nextAct === 'heavy') this.triggerHeavyAttack();
+          else if (nextAct === 'dodge') this.triggerDodge();
+        }
       }
     } else if (this.isDodging) {
       this.dodgeTimer += dt;
-      const progress = this.dodgeTimer / this.dodgeDuration;
+      const progress = Math.min(1, this.dodgeTimer / this.dodgeDuration);
       this.hero.playDodgePose(progress);
-      this.hero.position.addScaledVector(this.dodgeDir, 16 * dt);
+
+      const dodgeSpeed = 16 * (1.1 - 0.3 * progress);
+      this.hero.position.addScaledVector(this.dodgeDir, dodgeSpeed * dt);
+
+      if (this.hero.position.length() > 34) {
+        this.hero.position.setLength(34);
+      }
 
       if (this.dodgeTimer >= this.dodgeDuration) {
         this.isDodging = false;
         this.hero.rotation.x = 0;
         this.hero.position.y = 0;
+
+        // Drain buffered input if queued
+        if (this.bufferedAction) {
+          const nextAct = this.bufferedAction;
+          this.bufferedAction = null;
+          this.bufferedActionTimer = 0;
+          if (nextAct === 'light') this.triggerLightAttack();
+          else if (nextAct === 'heavy') this.triggerHeavyAttack();
+          else if (nextAct === 'dodge') this.triggerDodge();
+        }
       }
     } else {
       this.hero.animateMovement(moveSpeed, time);
     }
 
-    // Passive Axé recharge & Combo decay
+    // Passive Axé recharge
     if (this.stats.axe < this.stats.maxAxe) {
       this.stats.axe = Math.min(this.stats.maxAxe, this.stats.axe + 1.5 * dt);
     }
   }
 
   private updateEnemies(dt: number, time: number) {
-    this.enemies.forEach((entity) => {
+    let closestStunned: EnemyEntity | null = null;
+    let closestStunnedDist = Infinity;
+
+    for (const entity of this.enemies) {
+      // 1. Mesh hit flash restoration
+      if (entity.flashTimer > 0) {
+        entity.flashTimer -= dt;
+        if (entity.flashTimer <= 0) {
+          entity.originalEmissives.forEach((rec) => {
+            rec.mat.emissive.copy(rec.emissive);
+            rec.mat.emissiveIntensity = rec.intensity;
+          });
+        }
+      }
+
+      // 2. Dead Enemy
       if (entity.stats.hp <= 0) {
-        // Death animation
         entity.deathTimer -= dt;
         entity.mesh.position.y = -0.5 * (1 - entity.deathTimer);
         entity.mesh.scale.multiplyScalar(0.97);
         if (entity.deathTimer <= 0) {
           this.scene.remove(entity.mesh);
         }
-        return;
+        continue;
       }
 
-      // Hit reaction
+      // 3. Stagger Reaction
+      if (entity.staggerTimer > 0) {
+        entity.staggerTimer -= dt;
+        entity.stats.state = 'stagger';
+        continue;
+      }
       if (entity.hitTimer > 0) {
         entity.hitTimer -= dt;
-        return;
+        continue;
       }
 
-      // AI: Chase hero
+      // 4. Stunned State (low HP execution opportunity)
+      if (entity.stats.state === 'stunned') {
+        entity.stunTimer -= dt;
+        entity.mesh.rotation.z = Math.sin(time * 8) * 0.15; // Dazed stagger wobble
+        if (entity.stunTimer <= 0) {
+          entity.stats.state = 'chase';
+          entity.stats.canBeExecuted = false;
+          entity.mesh.rotation.z = 0;
+        } else {
+          const d = entity.mesh.position.distanceTo(this.hero.position);
+          if (d <= 4.2 && d < closestStunnedDist) {
+            closestStunnedDist = d;
+            closestStunned = entity;
+          }
+        }
+        continue;
+      }
+
+      // 5. Finite State Machine: Chase -> Windup -> Attack -> Recovery
+      const config = ENEMY_COMBAT_CONFIGS[entity.type];
       const toHero = _tempVec.subVectors(this.hero.position, entity.mesh.position);
       const dist = toHero.length();
 
-      // Look at hero
-      entity.mesh.rotation.y = Math.atan2(toHero.x, toHero.z);
+      // Face player during chase, windup, and attack
+      if (entity.stats.state === 'chase' || entity.stats.state === 'windup' || entity.stats.state === 'attack') {
+        entity.mesh.rotation.y = Math.atan2(toHero.x, toHero.z);
+      }
 
-      const attackRange = entity.stats.isBoss ? 4.2 : 2.0;
+      if (entity.stats.state === 'chase') {
+        if (dist > config.attackRange) {
+          toHero.normalize();
+          entity.mesh.position.addScaledVector(toHero, entity.stats.speed * dt);
+        } else {
+          // Enter Windup telegraph
+          entity.stats.state = 'windup';
+          entity.windupTimer = config.windupDuration;
+          entity.hasHitPlayerThisAttack = false;
+          soundManager.playTelegraph();
+        }
+      } else if (entity.stats.state === 'windup') {
+        entity.windupTimer -= dt;
+        // Visual telegraph posture lift
+        const wRatio = 1 - Math.max(0, entity.windupTimer / config.windupDuration);
+        entity.mesh.position.y = Math.sin(wRatio * Math.PI) * 0.25;
 
-      if (dist > attackRange) {
-        // Move towards hero
-        toHero.normalize();
-        entity.mesh.position.addScaledVector(toHero, entity.stats.speed * dt);
-      } else {
-        // Attack hero
-        entity.attackTimer += dt;
-        if (entity.attackTimer >= 1.6) {
-          entity.attackTimer = 0;
+        if (entity.windupTimer <= 0) {
+          entity.mesh.position.y = 0;
+          entity.stats.state = 'attack';
+          entity.activeAttackTimer = config.activeDuration;
+          entity.hasHitPlayerThisAttack = false;
+        }
+      } else if (entity.stats.state === 'attack') {
+        entity.activeAttackTimer -= dt;
 
-          // Damage player if not dodging
-          if (!this.isDodging) {
-            const rawDmg = entity.stats.attackPower - this.stats.defense * 0.4;
-            const finalDmg = Math.max(5, Math.round(rawDmg));
-            this.stats.hp -= finalDmg;
+        if (!entity.hasHitPlayerThisAttack) {
+          const strikeRange = config.attackRange * 1.25;
+          if (dist <= strikeRange) {
+            entity.hasHitPlayerThisAttack = true;
 
-            soundManager.playClash();
-            this.triggerCameraShake(0.35);
-            this.addDamagePopup(`-${finalDmg}`, this.hero.position, '#ef4444', false);
+            // Invulnerability frames check!
+            if (this.isDodging && isDodgeInvulnerable(this.dodgeTimer)) {
+              soundManager.playEvade();
+              this.addDamagePopup('ESQUIVA PERFEITA!', this.hero.position, '#38bdf8', false);
+            } else {
+              const finalDmg = calculateEnemyDamageToPlayer(
+                entity.stats.attackPower,
+                this.stats.defense,
+                this.stats.activeOrixa
+              );
+              this.stats.hp = Math.max(0, this.stats.hp - finalDmg);
 
-            if (this.stats.hp <= 0) {
-              this.stats.hp = 0;
-              this.gameState = 'gameover';
-              this.callbacks.onGameStateChange('gameover');
+              soundManager.playClash();
+              this.triggerCameraShake(entity.stats.isBoss ? 0.6 : 0.35);
+              this.addDamagePopup(`-${finalDmg}`, this.hero.position, '#ef4444', false);
+
+              if (this.stats.hp <= 0) {
+                this.stats.hp = 0;
+                this.gameState = 'gameover';
+                this.callbacks.onGameStateChange('gameover');
+              }
+
+              this.callbacks.onStatsUpdate({ ...this.stats });
             }
-
-            this.callbacks.onStatsUpdate({ ...this.stats });
           }
+        }
+
+        if (entity.activeAttackTimer <= 0) {
+          entity.stats.state = 'recovery';
+          entity.recoveryTimer = config.recoveryDuration;
+        }
+      } else if (entity.stats.state === 'recovery') {
+        entity.recoveryTimer -= dt;
+        if (entity.recoveryTimer <= 0) {
+          entity.stats.state = 'chase';
         }
       }
 
@@ -1462,11 +1761,29 @@ export class GameEngine {
       if (entity.type === 'boitata') {
         (entity.mesh as BoitataModelGroup).animateSerpent?.(time);
       } else if (entity.type === 'mapinguari') {
-        (entity.mesh as MapinguariModelGroup).animateBoss?.(time, entity.attackTimer > 1.2);
+        (entity.mesh as MapinguariModelGroup).animateBoss?.(
+          time,
+          entity.stats.state === 'windup' || entity.stats.state === 'attack'
+        );
       }
-    });
+    }
 
-    // Remove dead enemies from array
+    // Update execution prompt sync
+    const targetExecution: EnemyEntity | null = closestStunned;
+    if (targetExecution) {
+      this.executionTarget = targetExecution;
+      this.callbacks.onExecutionPrompt(true, targetExecution.stats.name);
+    } else {
+      if (
+        this.executionTarget &&
+        (this.executionTarget.stats.hp <= 0 || this.executionTarget.stats.state !== 'stunned')
+      ) {
+        this.executionTarget = null;
+        this.callbacks.onExecutionPrompt(false);
+      }
+    }
+
+    // Remove dead enemies from array after death timer elapses
     this.enemies = this.enemies.filter((e) => e.stats.hp > 0 || e.deathTimer > 0);
   }
 

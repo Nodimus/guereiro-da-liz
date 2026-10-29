@@ -33,6 +33,9 @@ export interface PlayerStats {
   comboCount: number;
   comboScore: number;
   comboRank: 'D' | 'C' | 'B' | 'A' | 'S' | 'SSS';
+  comboTimer?: number;
+  maxComboTimer?: number;
+  isInvulnerable?: boolean;
   activeOrixa: OrixaType;
 }
 
@@ -47,9 +50,10 @@ export interface EnemyStats {
   maxHp: number;
   attackPower: number;
   speed: number;
+  defense: number;
   isBoss: boolean;
   canBeExecuted: boolean;
-  state: 'idle' | 'patrol' | 'chase' | 'windup' | 'attack' | 'hit' | 'stunned' | 'dying';
+  state: 'idle' | 'patrol' | 'chase' | 'windup' | 'attack' | 'recovery' | 'hit' | 'stagger' | 'stunned' | 'dying';
 }
 
 export interface DamageNumber {

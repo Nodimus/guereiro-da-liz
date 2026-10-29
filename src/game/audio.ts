@@ -502,6 +502,69 @@ class SoundManager {
     osc.stop(t + 0.3);
   }
 
+  // Evasion Whoosh (Dodging through an attack)
+  public playEvade() {
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(450, t);
+    osc.frequency.exponentialRampToValueAtTime(140, t + 0.22);
+
+    gain.gain.setValueAtTime(0.35, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+
+    osc.connect(gain);
+    gain.connect(this.sfxGain);
+
+    osc.start(t);
+    osc.stop(t + 0.22);
+  }
+
+  // Enemy Windup Telegraph Cue
+  public playTelegraph() {
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(180, t);
+    osc.frequency.linearRampToValueAtTime(320, t + 0.25);
+
+    gain.gain.setValueAtTime(0.18, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+
+    osc.connect(gain);
+    gain.connect(this.sfxGain);
+
+    osc.start(t);
+    osc.stop(t + 0.25);
+  }
+
+  // Enemy Stagger / Stun Sound
+  public playStagger() {
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(220, t);
+    osc.frequency.exponentialRampToValueAtTime(55, t + 0.35);
+
+    gain.gain.setValueAtTime(0.35, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+
+    osc.connect(gain);
+    gain.connect(this.sfxGain);
+
+    osc.start(t);
+    osc.stop(t + 0.35);
+  }
+
   // Level Up / Skill Unlock
   public playSkillUnlock() {
     if (!this.ctx || !this.sfxGain) return;
